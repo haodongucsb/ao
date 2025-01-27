@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import copy
+from enum import IntEnum
 
 import pytest
 import torch
@@ -28,6 +29,14 @@ torch.manual_seed(2)
 
 if not TORCH_VERSION_AT_LEAST_2_4:
     pytest.skip("Unsupported PyTorch version", allow_module_level=True)
+
+
+# not for land, https://www.internalfb.com/phabricator/paste/view/P1717686991
+class DataType(IntEnum):
+    DEFAULT = 0
+    E8M0 = 1
+    FP4 = 2
+    UFP8 = 3
 
 
 # source: https://stackoverflow.com/a/22638709
@@ -234,3 +243,79 @@ def test_filter_fn():
     swap_linear_with_mx_inference_linear(m2, torch.float8_e4m3fn, 32, filter_fn)  # noqa: E501
     assert type(m2[0]) == MXInferenceLinear
     assert type(m2[1]) == torch.nn.Linear
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(
+    not is_sm_at_least_100(),
+    reason="blockwise torch._scaled_mm requires CUDA 10.0 or higher",
+)
+def test_scaled_mm_mxfp8():
+    # hello world
+    # next: basic numerics
+
+    M, K, N = 8192, 4096, 8192
+    BLOCK_SIZE = 32
+    a = torch.randint(128, (M, K), device="cuda", dtype=torch.uint8).view(
+        torch.float8_e4m3fn
+    )
+    b = (
+        torch.randint(128, (N, K), device="cuda", dtype=torch.uint8)
+        .view(torch.float8_e4m3fn)
+        .t()
+    )
+    a_scales = torch.randint(
+        128, (M, K // BLOCK_SIZE), device="cuda", dtype=torch.uint8
+    )
+    b_scales = torch.randint(
+        128, (K // BLOCK_SIZE, N), device="cuda", dtype=torch.uint8
+    ).t()
+    out = torch._scaled_mm(
+        a,
+        b,
+        a_scales,
+        b_scales,
+        None,
+        None,
+        torch.bfloat16,
+        False,
+        None,
+        None,
+        DataType.E8M0,
+    )
+    print(out)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(
+    not is_sm_at_least_100(),
+    reason="blockwise torch._scaled_mm requires CUDA 10.0 or higher",
+)
+def test_scaled_mm_nvfp4():
+    # hello world
+    # next: basic numerics
+
+    M, K, N = 8192, 4096, 8192
+    BLOCK_SIZE = 16
+    a = torch.randint(128, (M, K // 2), device="cuda", dtype=torch.uint8)
+    b = torch.randint(128, (N, K // 2), device="cuda", dtype=torch.uint8).t()
+    a_scales = torch.randint(
+        128, (M, K // BLOCK_SIZE), device="cuda", dtype=torch.uint8
+    )
+    b_scales = torch.randint(
+        128, (N, K // BLOCK_SIZE), device="cuda", dtype=torch.uint8
+    ).t()
+    out = torch._scaled_mm(
+        a,
+        b,
+        a_scales,
+        b_scales,
+        None,
+        None,
+        torch.bfloat16,
+        False,
+        DataType.FP4,
+        DataType.FP4,
+        DataType.UFP8,
+    )
+    print(out)
